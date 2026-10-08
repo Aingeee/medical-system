@@ -1,6 +1,8 @@
 import os
 import bcrypt
 from dotenv import load_dotenv
+from sqlalchemy.sql import roles
+
 load_dotenv()
 
 from fastapi import FastAPI, Depends , HTTPException
@@ -12,6 +14,7 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from jose import jwt, ExpiredSignatureError
 
+__version__ = "0.4.0"
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:<your_password>@localhost:5432/medical_db")
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 ALGORITHM = "HS256"
@@ -61,7 +64,7 @@ class UserLogin(BaseModel):
     username: str
     password: str
 
-app = FastAPI(title="病历管理系统")
+app = FastAPI(title="病历管理系统", version=__version__)
 security = HTTPBearer()
 
 def create_access_token(user_id: int):
@@ -93,6 +96,13 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="用户不存在")
 
     return user
+
+def require_role(*roles):
+    def checker(current_user: User = Depends(get_current_user)):
+        if current_user.role not in roles:
+            raise HTTPException(status_code=403, detail="权限不足")
+        return current_user
+    return checker
 
 @app.get("/")
 def root():
@@ -159,3 +169,11 @@ def get_me(current_user: User = Depends(get_current_user)):
         "real_name": current_user.real_name,
         "role": current_user.role,
     }
+
+@app.get("/doctor-only")
+def doctor_only(current_user: User = Depends(require_role("doctor"))):
+    return {"message":f"你好，医生{current_user.real_name}"}
+
+@app.get("/admin-only")
+def admin_only(current_user: User = Depends(require_role("admin"))):
+    return {"message":f"你好，管理员{current_user.real_name}"}
