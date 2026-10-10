@@ -1,5 +1,6 @@
 import os
 import bcrypt
+import uuid
 from dotenv import load_dotenv
 from sqlalchemy.sql import roles
 
@@ -46,6 +47,22 @@ class User(Base):
     department_id = Column(Integer, ForeignKey("departments.id"))
     created_at = Column(DateTime, server_default=func.now())
 
+class MedicalRecord(Base):
+    __tablename__ = "medical_records"
+    id = Column(Integer, primary_key=True, index=True)
+    record_no = Column(String(30),unique=True,nullable=False,index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"),nullable=False)
+    doctor_id = Column(Integer, ForeignKey("users.id"),nullable=False)
+    visit_type = Column(String(20), nullable=False)
+    visit_time = Column(DateTime, nullable=False)
+    chief_complaint = Column(String(255))
+    present_illness = Column(String(255))
+    allergy_history = Column(String(255))
+    status = Column(String(20), nullable=False,default="draft")
+    signed_at = Column(DateTime)
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime, server_default=func.now(),onupdate=func.now())
+
 Base.metadata.create_all(bind=engine)
 
 class PatientCreate(BaseModel):
@@ -64,6 +81,21 @@ class UserLogin(BaseModel):
     username: str
     password: str
 
+class MedicalRecordCreate(BaseModel):
+    patient_id: int
+    visit_type: str
+    visit_time: datetime
+    chief_complaint: str | None
+    present_illness: str | None
+    allergy_history: str | None
+
+class MedicalRecordCreate(BaseModel):
+    patient_id: int
+    visit_type: str
+    visit_time: datetime
+    chief_complaint: str | None = None
+    present_illness: str | None = None
+    allergy_history: str | None = None
 app = FastAPI(title="病历管理系统", version=__version__)
 security = HTTPBearer()
 
@@ -169,6 +201,34 @@ def get_me(current_user: User = Depends(get_current_user)):
         "real_name": current_user.real_name,
         "role": current_user.role,
     }
+
+@app.post("/records")
+def create_record(
+        data: MedicalRecordCreate,
+        current_user: User = Depends(require_role("doctor")),
+        db: Session = Depends(get_db)
+):
+    patient = db.query(Patient).filter(Patient.id == data.patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="患者不存在")
+
+    record_no = f"MR{datetime.now().strftime('%Y%m%d%H%M')}{uuid.uuid4().hex[:6].upper()}"
+
+    record = MedicalRecord(
+        record_no=record_no,
+        patient_id=data.patient_id,
+        doctor_id=current_user.id,
+        visit_type=data.visit_type,
+        visit_time=data.visit_time,
+        chief_complaint=data.chief_complaint,
+        present_illness=data.present_illness,
+        allergy_history=data.allergy_history,
+        status="draft",
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
 
 @app.get("/doctor-only")
 def doctor_only(current_user: User = Depends(require_role("doctor"))):
