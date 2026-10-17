@@ -1,239 +1,37 @@
-import os
-import bcrypt
-import uuid
-from dotenv import load_dotenv
-from sqlalchemy.sql import roles
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
-load_dotenv()
+from app.database import Base, engine
+from app.routers import router
 
-from fastapi import FastAPI, Depends , HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, DateTime, func
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
-from pydantic import BaseModel
-from passlib.context import CryptContext
-from datetime import datetime, timedelta
-from jose import jwt, ExpiredSignatureError
+__version__ = "0.6.0"
 
-__version__ = "0.4.0"
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:<your_password>@localhost:5432/medical_db")
-SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+app = FastAPI(title="病历管理系统", version=__version__)
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-Base = declarative_base()
 
-class Patient(Base):
-    __tablename__ = "patients"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(50), nullable=False)
-    gender = Column(String(1))
-    phone = Column(String(20))
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.status_code, "message": exc.detail}},
+    )
 
-class Department(Base):
-    __tablename__ = "departments"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(50), nullable=False, unique=True)
 
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(50), nullable=False, unique=True, index=True)
-    password_hash = Column(String(255), nullable=False)
-    real_name = Column(String(50), nullable=False)
-    role = Column(String(50), nullable=False)
-    department_id = Column(Integer, ForeignKey("departments.id"))
-    created_at = Column(DateTime, server_default=func.now())
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": 422,
+                "message": "请求参数校验失败",
+                "details": exc.errors(),
+            }
+        },
+    )
 
-class MedicalRecord(Base):
-    __tablename__ = "medical_records"
-    id = Column(Integer, primary_key=True, index=True)
-    record_no = Column(String(30),unique=True,nullable=False,index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"),nullable=False)
-    doctor_id = Column(Integer, ForeignKey("users.id"),nullable=False)
-    visit_type = Column(String(20), nullable=False)
-    visit_time = Column(DateTime, nullable=False)
-    chief_complaint = Column(String(255))
-    present_illness = Column(String(255))
-    allergy_history = Column(String(255))
-    status = Column(String(20), nullable=False,default="draft")
-    signed_at = Column(DateTime)
-    created_at = Column(DateTime)
-    updated_at = Column(DateTime, server_default=func.now(),onupdate=func.now())
+
+app.include_router(router)
 
 Base.metadata.create_all(bind=engine)
-
-class PatientCreate(BaseModel):
-    name: str
-    gender: str
-    phone: str
-
-class UserRegister(BaseModel):
-    username: str
-    password: str
-    real_name: str
-    role: str
-    department_id: int | None = None
-
-class UserLogin(BaseModel):
-    username: str
-    password: str
-
-class MedicalRecordCreate(BaseModel):
-    patient_id: int
-    visit_type: str
-    visit_time: datetime
-    chief_complaint: str | None
-    present_illness: str | None
-    allergy_history: str | None
-
-class MedicalRecordCreate(BaseModel):
-    patient_id: int
-    visit_type: str
-    visit_time: datetime
-    chief_complaint: str | None = None
-    present_illness: str | None = None
-    allergy_history: str | None = None
-app = FastAPI(title="病历管理系统", version=__version__)
-security = HTTPBearer()
-
-def create_access_token(user_id: int):
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": str(user_id), "exp": expire}
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db)
-):
-    token = credentials.credentials
-
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = int(payload.get("sub"))
-    except Exception:
-        raise HTTPException(status_code=401, detail="token 无效或已过期")
-
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="用户不存在")
-
-    return user
-
-def require_role(*roles):
-    def checker(current_user: User = Depends(get_current_user)):
-        if current_user.role not in roles:
-            raise HTTPException(status_code=403, detail="权限不足")
-        return current_user
-    return checker
-
-@app.get("/")
-def root():
-    return {"message": "病历管理系统运行中"}
-
-@app.post("/patients")
-def create_patient(data: PatientCreate, db: Session = Depends(get_db)):
-    patient = Patient(name=data.name, gender=data.gender, phone=data.phone)
-    db.add(patient)
-    db.commit()
-    db.refresh(patient)
-    return patient
-
-@app.get("/patients")
-def list_patients(db: Session = Depends(get_db)):
-    return db.query(Patient).all()
-
-@app.post("/register")
-def register_user(data: UserRegister, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.username == data.username).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="用户名已存在")
-
-    hashed = bcrypt.hashpw(data.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-    user=User(
-        username=data.username,
-        password_hash=hashed,
-        real_name=data.real_name,
-        role=data.role,
-        department_id=data.department_id,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    return {
-        "id": user.id,
-        "username": user.username,
-        "real_name": user.real_name,
-        "role": user.role,
-    }
-
-@app.post("/login")
-def login(data: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == data.username).first()
-    if not user:
-        raise HTTPException(status_code=401,detail="用户名或密码错误")
-
-    if not bcrypt.checkpw(data.password.encode("utf-8"), user.password_hash.encode("utf-8")):
-        raise HTTPException(status_code=401,detail="用户名或密码错误")
-
-    token = create_access_token(user.id)
-    return {
-        "access_token": token,
-        "token_type": "bearer"
-    }
-
-@app.get("/me")
-def get_me(current_user: User = Depends(get_current_user)):
-    return {
-        "id": current_user.id,
-        "username": current_user.username,
-        "real_name": current_user.real_name,
-        "role": current_user.role,
-    }
-
-@app.post("/records")
-def create_record(
-        data: MedicalRecordCreate,
-        current_user: User = Depends(require_role("doctor")),
-        db: Session = Depends(get_db)
-):
-    patient = db.query(Patient).filter(Patient.id == data.patient_id).first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="患者不存在")
-
-    record_no = f"MR{datetime.now().strftime('%Y%m%d%H%M')}{uuid.uuid4().hex[:6].upper()}"
-
-    record = MedicalRecord(
-        record_no=record_no,
-        patient_id=data.patient_id,
-        doctor_id=current_user.id,
-        visit_type=data.visit_type,
-        visit_time=data.visit_time,
-        chief_complaint=data.chief_complaint,
-        present_illness=data.present_illness,
-        allergy_history=data.allergy_history,
-        status="draft",
-    )
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-    return record
-
-@app.get("/doctor-only")
-def doctor_only(current_user: User = Depends(require_role("doctor"))):
-    return {"message":f"你好，医生{current_user.real_name}"}
-
-@app.get("/admin-only")
-def admin_only(current_user: User = Depends(require_role("admin"))):
-    return {"message":f"你好，管理员{current_user.real_name}"}
