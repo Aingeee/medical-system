@@ -2,7 +2,7 @@
 
 > 一个基于 **FastAPI + PostgreSQL** 的病历管理系统后端，用于个人练习后端开发与医疗信息化业务建模。
 
-**当前版本：`v0.6.0`**
+**当前版本：`v0.7.0`**
 （版本号唯一来源为 `main.py` 中的 `__version__`，启动后访问 `/docs` 可见）
 
 ---
@@ -18,7 +18,7 @@
 - [数据模型](#数据模型)
 - [鉴权说明](#鉴权说明)
 - [版本管理](#版本管理)
-- [最新更新内容](#最新更新内容v060)
+- [最新更新内容](#最新更新内容v070)
 - [版本历史](#版本历史)
 - [事故记录](#事故记录)
 - [后续计划](#后续计划)
@@ -52,7 +52,9 @@
 - [x] 病历模块表设计文档（[`docs/medical-record-design.md`](./docs/medical-record-design.md)）
 - [x] 应用模块化拆分（`app/` 包：config / database / models / schemas / auth / routers）
 - [x] 配置中心化（`pydantic-settings` 统一读取 `.env`）
-- [ ] 病历查询、修改、签名与版本留痕
+- [x] 病历列表与详情接口（`GET /records`、`GET /records/{record_id}`）
+- [x] 跨域支持（CORS 白名单，供前端联调）
+- [ ] 病历修改、签名与版本留痕
 - [ ] 诊断子表（`diagnoses`）与修订留痕表（`record_revisions`）
 - [ ] 处方管理模块
 - [ ] 审计日志
@@ -142,6 +144,22 @@ uvicorn main:app --reload
 
 浏览器打开 <http://localhost:8000/docs>（Swagger UI），或 <http://localhost:8000/redoc>。
 
+### 6. 与前端联调（可选）
+
+本仓库只提供 API，界面在 [`../medical-frontend`](../medical-frontend)。联调时两个都要启动：
+
+```bash
+# 终端 1：后端
+uvicorn main:app --reload
+
+# 终端 2：前端（Vue 3 + Vite）
+cd ../medical-frontend
+npm install
+npm run dev
+```
+
+前端默认跑在 `http://localhost:5173`，后端的 CORS 白名单已按这个端口配置。若前端换了端口，需同步修改 `main.py` 中的 `allow_origins` 并重启后端，否则浏览器会拦截请求。
+
 ## API 接口一览
 
 | 方法 | 路径 | 说明 | 是否需要鉴权 |
@@ -150,6 +168,8 @@ uvicorn main:app --reload
 | `POST` | `/patients` | 创建患者 | 否 |
 | `GET` | `/patients` | 查询患者列表 | 否 |
 | `POST` | `/records` | 创建病历（`record_no` 自动生成，初始状态 `draft`） | 是（`doctor`） |
+| `GET` | `/records` | 病历列表（`skip` / `limit` 分页，按创建时间倒序） | 是（任意角色） |
+| `GET` | `/records/{record_id}` | 病历详情（仅 `admin` 或该病历的接诊医生） | 是（`admin` 或本人） |
 | `POST` | `/register` | 用户注册 | 否 |
 | `POST` | `/login` | 用户登录，返回访问令牌 | 否 |
 | `GET` | `/me` | 查询当前登录用户信息 | 是（任意角色） |
@@ -213,7 +233,7 @@ curl http://localhost:8000/me \
 `main.py` 顶部维护唯一版本号，并传给 FastAPI：
 
 ```python
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 app = FastAPI(title="病历管理系统", version=__version__)
 ```
 
@@ -264,11 +284,12 @@ git tag -d v0.6.0
 
 ### 版本与提交对照
 
-> 全部历史版本均已打附注标签并推送到 GitHub，可用 `git ls-remote --tags origin` 核对。
+> 已发布的版本均已打附注标签并推送到 GitHub，可用 `git ls-remote --tags origin` 核对。标为「本次提交」的版本，在提交后再执行打标签命令。
 
 | 版本 | 对应提交 | 提交日期 | 标签说明 |
 | --- | --- | --- | --- |
-| `v0.6.0` | 本次提交 | 2026-10-17 | 工程化重构：`main.py` 拆分为 `app/` 六个模块 |
+| `v0.7.0` | 本次提交 | 2026-10-24 | 病历列表/详情接口与 CORS 支持，为前端联调做准备 |
+| `v0.6.0` | `b1c151c` | 2026-10-17 | 工程化重构：`main.py` 拆分为 `app/` 六个模块 |
 | `v0.5.0` | `c38d3dc` | 2026-10-11 | 病历模块最小版本（主表 + 创建接口）与表设计文档 |
 | `v0.4.0` | `d175c43` | 2026-10-08 | 引入语义化版本与发版流程，README 重写 |
 | `v0.3.0` | `f8ce034` | 2026-10-04 | 注册登录、JWT 鉴权与角色权限 |
@@ -285,24 +306,23 @@ git tag -l -n1
 git log --oneline --decorate -6
 ```
 
-## 最新更新内容（`v0.6.0`）
+## 最新更新内容（`v0.7.0`）
 
-本次更新是项目自创建以来的**第 6 次版本提交**，版本号 `v0.6.0`。这是一次**纯重构**——所有接口的路径、请求体、响应结构与 `v0.5.0` 完全一致，没有新增任何功能。
+本次更新是项目自创建以来的**第 7 次版本提交**，目标是让前端能安全地读取数据，共三件事：
 
-**为什么重构**：`main.py` 曾是一个 256 行的单体文件，数据模型、请求体校验、鉴权逻辑、全部路由、异常处理全挤在一起。改一个字段要在几百行里翻找，也没法单独测试任何一层。
+- 🌐 **跨域支持**：`main.py` 增加 `CORSMiddleware`，白名单为 `http://localhost:5173` 与 `http://127.0.0.1:5173`（Vite 开发服务器的默认端口）。前端跑在其他端口时需要同步修改白名单，否则浏览器会拦截请求
+- 📄 **病历查询接口**：新增 `GET /records`（`skip` / `limit` 分页，按创建时间倒序，任意已登录用户）与 `GET /records/{record_id}`（详情，仅 `admin` 或该病历的接诊医生可读，否则返回 `403`）
+- 🧩 **响应模型**：新增 `MedicalRecordResponse`（`from_attributes = True`），用 `response_model` 约束输出字段，避免把 ORM 对象的内部字段直接暴露给前端
 
-- 🧱 **模块化拆分**：`main.py` 只保留「创建应用 + 注册异常处理 + 挂载路由 + 建表」四件事，业务代码下沉到 `app/` 包，按职责分为 `config` / `database` / `models` / `schemas` / `auth` / `routers` 六个模块
-- ⚙️ **配置中心化**：改用 `pydantic-settings` 统一读取 `.env`，配置项声明为带类型的字段，缺失必填项时启动即报错，而不是运行到一半才崩
-- 🔐 **鉴权独立**：密码哈希、JWT 签发校验、`get_current_user` 与 `require_role` 全部收进 `app/auth.py`，路由层只声明依赖
-- 🐛 **顺带修掉的问题**：删除 `MedicalRecordCreate` 的重复定义（原先定义两次，后一份覆盖前一份）；`MedicalRecord.created_at` 补上 `server_default=func.now()`；清理 `main.py` 中 `os`、`bcrypt`、`uuid`、`create_engine` 等未使用的导入
-- 📝 **文档同步**：项目结构、接口一览、数据模型、版本历史随重构更新
+> 这一版**只增加读取能力**，写入逻辑未变：`POST /records` 依然仅 `doctor` 可调用，创建后的状态仍是 `draft`。修改、签名与修订留痕留到后续版本。
 
-**如何确认重构没有改变行为**：启动后访问 `/docs`，接口数量仍为 **9 个**，右上角版本号显示 `0.6.0`。
+**如何验收**：`/docs` 中接口数量由 9 个变为 **11 个**，版本号显示 `0.7.0`；用医生账号登录前端（`http://localhost:5173`）能看到患者列表。
 
 ## 版本历史
 
 | 版本 | 日期 | 主要内容 |
 | --- | --- | --- |
+| `v0.7.0` | 2026-10-24 | 新增病历列表（`GET /records`）与详情（`GET /records/{record_id}`）接口、`MedicalRecordResponse` 响应模型；增加 CORS 中间件供前端联调 |
 | `v0.6.0` | 2026-10-17 | 工程化重构：`main.py` 拆分为 `app/` 六个模块；引入 `pydantic-settings` 配置中心；修复重复定义、缺失默认值与冗余导入；同步 README |
 | `v0.5.0` | 2026-10-11 | 新增病历主表（`medical_records`）与创建接口（`POST /records`，仅医生）；新增病历模块表设计文档 |
 | `v0.4.0` | 2026-10-08 | 引入语义化版本与 Git Tag 规范；README 工程化重写（接口一览、数据模型、鉴权示例、版本管理） |
@@ -316,7 +336,6 @@ git log --oneline --decorate -6
 
 ## 后续计划
 
-- [ ] 病历查询与详情接口（`GET /records`、`GET /records/{id}`）
 - [ ] 病历修改与签名（草稿可改、签名即锁定、修订走留痕）
 - [ ] 诊断子表（`diagnoses`）与 ICD-10 编码
 - [ ] 审计日志（记录所有敏感操作）
@@ -333,3 +352,5 @@ git log --oneline --decorate -6
 ## 说明
 
 本项目为个人学习项目，仅用于练习后端开发与医疗信息化业务建模，**不可用于生产环境**。
+
+前端代码位于 [`../medical-frontend`](../medical-frontend)，启动与接口对接说明见该目录的 README。

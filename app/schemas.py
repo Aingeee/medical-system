@@ -26,3 +26,20 @@ class MedicalRecordCreate(BaseModel):
     chief_complaint: str | None = None
     present_illness: str | None = None
     allergy_history: str | None = None
+
+class MedicalRecordResponse(BaseModel):
+    id: int
+    record_no: str
+    patient_id: int
+    doctor_id: int
+    visit_type: str
+    visit_time: datetime
+    chief_complaint: str | None
+    present_illness: str | None
+    allergy_history: str | None
+    status: str
+    signed_at: datetime | None
+    created_at: datetime | None
+
+    class Config:
+        from_attributes = True

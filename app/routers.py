@@ -1,4 +1,5 @@
 import uuid
+
 import bcrypt
 from datetime import datetime
 from fastapi import Depends, HTTPException, APIRouter
@@ -6,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import User,Patient,MedicalRecord
-from app.schemas import UserLogin,UserRegister,PatientCreate,MedicalRecordCreate
+from app.schemas import UserLogin, UserRegister, PatientCreate, MedicalRecordCreate, MedicalRecordResponse
 from app.auth import create_access_token,get_current_user,require_role
 
 router = APIRouter()
@@ -112,3 +113,21 @@ def doctor_only(current_user: User = Depends(require_role("doctor"))):
 @router.get("/admin-only")
 def admin_only(current_user: User = Depends(require_role("admin"))):
     return {"message":f"你好，管理员{current_user.real_name}"}
+
+@router.get("/records",response_model=list[MedicalRecordResponse])
+def list_records(
+    skip: int = 0, limit: int = 10, current_user: User = Depends(get_current_user),db: Session = Depends(get_db)
+):
+    records = db.query(MedicalRecord).order_by(MedicalRecord.created_at.desc()).offset(skip).limit(limit).all()
+    return records
+
+@router.get("/records/{record_id}",response_model=MedicalRecordResponse)
+def get_record(record_id: int, current_user: User = Depends(get_current_user) , db: Session = Depends(get_db)):
+    record = db.query(MedicalRecord).filter(MedicalRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="/病历不存在")
+
+    if current_user.role != "admin" and record.doctor_id != current_user.id:
+        raise HTTPException(status_code=403, detail="你没有权限查看他人的病历")
+
+    return record
