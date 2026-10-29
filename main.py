@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine
 from app.routers import router
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 app = FastAPI(title="病历管理系统", version=__version__)
 

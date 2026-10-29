@@ -131,3 +131,27 @@ def get_record(record_id: int, current_user: User = Depends(get_current_user) , 
         raise HTTPException(status_code=403, detail="你没有权限查看他人的病历")
 
     return record
+
+@router.post("/records/{record_id}/sign")
+def sign_record(
+        record_id: int,
+        current_user: User = Depends(require_role("doctor")),
+        db: Session = Depends(get_db),
+):
+    record = db.query(MedicalRecord).filter(MedicalRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404,detail="病历不存在")
+
+    if record.doctor_id != current_user.id:
+        raise HTTPException(status_code=403,detail="你没有权限签名他人的病历")
+
+    if record.status == "signed":
+        raise HTTPException(status_code=400,detail="该病历已被签名锁定，请勿重复操作")
+
+    record.status = "signed"
+    record.signed_at = datetime.now()
+
+    db.commit()
+    db.refresh(record)
+
+    return {"message": "签名成功，病历已锁定","record": record}
