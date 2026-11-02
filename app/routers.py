@@ -116,16 +116,22 @@ def admin_only(current_user: User = Depends(require_role("admin"))):
 
 @router.get("/records",response_model=list[MedicalRecordResponse])
 def list_records(
-    skip: int = 0, limit: int = 10, current_user: User = Depends(get_current_user),db: Session = Depends(get_db)
+        skip: int = 0,
+        limit: int = 10,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)
 ):
-    records = db.query(MedicalRecord).order_by(MedicalRecord.created_at.desc()).offset(skip).limit(limit).all()
+    query = db.query(MedicalRecord)
+    if current_user.role != "admin":
+        query = query.filter(MedicalRecord.doctor_id == current_user.id)
+    records = query.order_by(MedicalRecord.created_at.desc()).offset(skip).limit(limit).all()
     return records
 
 @router.get("/records/{record_id}",response_model=MedicalRecordResponse)
 def get_record(record_id: int, current_user: User = Depends(get_current_user) , db: Session = Depends(get_db)):
     record = db.query(MedicalRecord).filter(MedicalRecord.id == record_id).first()
     if not record:
-        raise HTTPException(status_code=404, detail="/病历不存在")
+        raise HTTPException(status_code=404, detail="病历不存在")
 
     if current_user.role != "admin" and record.doctor_id != current_user.id:
         raise HTTPException(status_code=403, detail="你没有权限查看他人的病历")

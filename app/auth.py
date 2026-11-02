@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt
+from jose import jwt, JWTError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -27,8 +27,10 @@ def get_current_user(
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
         user_id = int(payload.get("sub"))
-    except Exception:
-        raise HTTPException(status_code=401, detail="token 无效或已过期")
+    except JWTError:
+        raise HTTPException(status_code=401,detail="token 无效或已过期")
+    except ValueError:
+        raise HTTPException(status_code=401,detail="token 载荷格式错误")
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:

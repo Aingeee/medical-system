@@ -1,19 +1,19 @@
 from datetime import datetime
 
+from typing import Literal
 from pydantic import BaseModel
-
-
-class PatientCreate(BaseModel):
-    name: str
-    gender: str
-    phone: str
 
 class UserRegister(BaseModel):
     username: str
     password: str
     real_name: str
-    role: str
+    role: Literal["doctor", "nurse"]
     department_id: int | None = None
+
+class PatientCreate(BaseModel):
+    name: str
+    gender: str
+    phone: str
 
 class UserLogin(BaseModel):
     username: str

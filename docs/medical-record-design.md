@@ -383,15 +383,21 @@ class RecordRevision(Base):
 
 ## 10. 当前实现进度（对应本文档）
 
-- [x] `medical_records` 基础表（简化版：12 字段）
-- [x] `POST /records` 创建病历接口
+- [x] `medical_records` 基础表（简化版：12 字段）— `v0.5.0`
+- [x] `POST /records` 创建病历接口 — `v0.5.0`
+- [x] `GET /records` 列表（`skip` / `limit`）+ `GET /records/{id}` 详情 — `v0.7.0`
+- [x] 签名接口：`POST /records/{id}/sign`（仅接诊医生、重复签名拦截、写入 `signed_at`）— `v0.8.0`
+- [x] 可见性隔离（详情）：非 `admin` 且非接诊医生访问 `GET /records/{id}` 返回 `403` — `v0.7.0`
+- [x] 可见性隔离（列表）：`GET /records` 对非 `admin` 追加 `doctor_id` 过滤 — `v0.9.0`（此前列表**未做过滤**，属越权漏洞）
 - [ ] 扩展字段：`department_id`、`visit_no`、`supervisor_id`
 - [ ] `diagnoses` 诊断子表（ICD-10 编码）
 - [ ] `record_revisions` 修订留痕表
 - [ ] 状态机校验：`draft` 才可改，`signed` 后拒改
-- [ ] 软删除：`deleted_at` 字段
-- [ ] 签名接口：`POST /records/{id}/sign`
+- [ ] 软删除：`deleted_at` 字段，作废用 `status = void`
 - [ ] 修订接口：`POST /records/{id}/amend`
+- [ ] 列表过滤：`GET /records?patient_id=` / `department_id` / `status`
 - [ ] 细粒度权限：医生只能看自己科室的患者
 
 > 每完成一项，在此处更新状态，并在 README 的「版本历史」里记录。
+>
+> **`signed` 锁定的实际强度**：`v0.8.0` 的签名只做到「状态置为 `signed` 且不可回退」，因为**还没有修改接口**，所以「已签名不可编辑」目前没有可被拒绝的入口。真正的锁定要等 `PUT /records/{id}` 加上 `status` 校验之后才成立。
