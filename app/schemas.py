@@ -43,3 +43,6 @@ class MedicalRecordResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class DepartmentCreate(BaseModel):
+    name: str

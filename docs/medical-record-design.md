@@ -395,7 +395,7 @@ class RecordRevision(Base):
 - [ ] 状态机校验：`draft` 才可改，`signed` 后拒改
 - [ ] 软删除：`deleted_at` 字段，作废用 `status = void`
 - [ ] 修订接口：`POST /records/{id}/amend`
-- [ ] 列表过滤：`GET /records?patient_id=` / `department_id` / `status`
+- [x] 列表过滤：`GET /records?patient_id=` — `v0.10.0`（与可见性条件为 `AND`，医生查他人患者返回空列表）；`department_id` / `status` 仍未实现
 - [ ] 细粒度权限：医生只能看自己科室的患者
 
 > 每完成一项，在此处更新状态，并在 README 的「版本历史」里记录。

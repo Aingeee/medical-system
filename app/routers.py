@@ -6,8 +6,8 @@ from fastapi import Depends, HTTPException, APIRouter
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User,Patient,MedicalRecord
-from app.schemas import UserLogin, UserRegister, PatientCreate, MedicalRecordCreate, MedicalRecordResponse
+from app.models import User,Patient,MedicalRecord,Department
+from app.schemas import UserLogin, UserRegister, PatientCreate, MedicalRecordCreate, MedicalRecordResponse, DepartmentCreate
 from app.auth import create_access_token,get_current_user,require_role
 
 router = APIRouter()
@@ -30,6 +30,10 @@ def list_patients(db: Session = Depends(get_db)):
 
 @router.post("/register")
 def register_user(data: UserRegister, db: Session = Depends(get_db)):
+    if data.department_id is not None:
+        dept = db.query(Department).filter(Department.id == data.department_id).first()
+        if not dept:
+            raise HTTPException(status_code=400, detail="所选科室不存在")
     existing = db.query(User).filter(User.username == data.username).first()
     if existing:
         raise HTTPException(status_code=400, detail="用户名已存在")
@@ -118,12 +122,17 @@ def admin_only(current_user: User = Depends(require_role("admin"))):
 def list_records(
         skip: int = 0,
         limit: int = 10,
+        patient_id: int | None = None,
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
     query = db.query(MedicalRecord)
     if current_user.role != "admin":
         query = query.filter(MedicalRecord.doctor_id == current_user.id)
+
+    if patient_id is not None:
+        query = query.filter(MedicalRecord.patient_id == patient_id)
+
     records = query.order_by(MedicalRecord.created_at.desc()).offset(skip).limit(limit).all()
     return records
 
@@ -161,3 +170,23 @@ def sign_record(
     db.refresh(record)
 
     return {"message": "签名成功，病历已锁定","record": record}
+
+@router.post("/departments")
+def create_department(
+        data: DepartmentCreate,
+        current_user: User = Depends(require_role("admin")),
+        db: Session = Depends(get_db),
+):
+    existing = db.query(Department).filter(Department.name == data.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="科室已存在")
+
+    dept = Department(name=data.name)
+    db.add(dept)
+    db.commit()
+    db.refresh(dept)
+    return dept
+
+@router.get("/departments")
+def list_departments(db: Session = Depends(get_db)):
+    return db.query(Department).all()
