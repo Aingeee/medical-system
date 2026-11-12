@@ -2,7 +2,7 @@
 
 > 一个基于 **FastAPI + PostgreSQL** 的病历管理系统后端，用于个人练习后端开发与医疗信息化业务建模。
 
-**当前版本：`v0.10.0`**
+**当前版本：`v0.11.0`**
 （版本号唯一来源为 `main.py` 中的 `__version__`，启动后访问 `/docs` 可见）
 
 ---
@@ -18,7 +18,7 @@
 - [数据模型](#数据模型)
 - [鉴权说明](#鉴权说明)
 - [版本管理](#版本管理)
-- [最新更新内容](#最新更新内容v0100)
+- [最新更新内容](#最新更新内容v0110)
 - [版本历史](#版本历史)
 - [事故记录](#事故记录)
 - [后续计划](#后续计划)
@@ -60,9 +60,11 @@
 - [x] JWT 异常处理细分（`JWTError` → 401、`ValueError` → 载荷格式错误）
 - [x] 科室管理接口（`POST /departments` 仅 `admin`、`GET /departments` 公开供注册页选择）
 - [x] 病历反向查询（`GET /records?patient_id=`，按患者查历史病历）
-- [ ] 注册时校验科室外键（校验代码已写，但 `filter(department_id=...)` 用法有误会抛 `TypeError`，见下方「已知问题」）
-- [ ] 病历修改接口（仅 `draft` 可改，`signed` 状态拒绝修改）
-- [ ] 诊断子表（`diagnoses`）与修订留痕表（`record_revisions`）
+- [x] 注册时校验科室外键（`Department.id == data.department_id`，科室不存在返回 `400`）
+- [x] 病历修改接口（`PUT /records/{record_id}`：仅 `draft` 可改，`signed` / `amended` 拒绝修改）
+- [x] 病历修订接口（`POST /records/{record_id}/amend`：已签名病历走修订，写入 `record_revisions` 快照并 `version + 1`）
+- [x] 修订留痕表（`record_revisions`）与修订历史查询（`GET /records/{record_id}/history`）
+- [ ] 诊断子表（`diagnoses`）与 ICD-10 编码
 - [ ] 处方管理模块
 - [ ] 审计日志
 
@@ -181,7 +183,10 @@ npm run dev
 | `POST` | `/records` | 创建病历（`record_no` 自动生成，初始状态 `draft`） | 是（`doctor`） |
 | `GET` | `/records` | 病历列表（`skip` / `limit` 分页，`patient_id` 过滤，按创建时间倒序；非 `admin` 只返回自己接诊的病历） | 是（任意角色） |
 | `GET` | `/records/{record_id}` | 病历详情（仅 `admin` 或该病历的接诊医生） | 是（`admin` 或本人） |
+| `PUT` | `/records/{record_id}` | 修改病历（仅 `draft`；`signed` / `amended` 返回 `400`，提示改用修订接口） | 是（`doctor` 本人） |
 | `POST` | `/records/{record_id}/sign` | 病历签名锁定（仅该病历的接诊医生，且病历须为 `draft`；重复签名返回 `400`） | 是（`doctor` 本人） |
+| `POST` | `/records/{record_id}/amend` | 修订已签名病历：写入 `record_revisions` 快照、`version + 1`、状态置为 `amended` | 是（`doctor` 本人） |
+| `GET` | `/records/{record_id}/history` | 修订历史（按时间倒序，含版本号、修订原因、操作人、快照内容；仅 `admin` 或该病历的接诊医生） | 是（`admin` 或本人） |
 | `GET` | `/doctor-only` | 医生专属示例接口 | 是（`doctor`） |
 | `GET` | `/admin-only` | 管理员专属示例接口 | 是（`admin`） |
 
@@ -191,7 +196,28 @@ npm run dev
 >
 > **`GET /records?patient_id=` 的过滤语义**：`patient_id` 是追加在数据隔离条件之后的 `AND`，不是覆盖。所以管理员能查到该患者的全部病历；医生只能查到「该患者 + 自己接诊」这部分；医生查一个自己没接诊过的患者会得到**空列表**（而不是 `403`）。前端据此把空态文案写成「该患者暂无你接诊的记录」，避免被误读成数据丢失。
 >
-> ⚠️ **已知问题（待修复）**：`register_user` 中的科室校验写成了 `db.query(Department).filter(department_id=data.department_id)`，SQLAlchemy 的 `filter()` 只接受位置参数，这样写会抛 `TypeError: Query.filter() got an unexpected keyword argument 'department_id'`。只要注册时选了科室就返回 `500`。正确写法是 `db.query(Department).filter(Department.id == data.department_id).first()`（或 `filter_by(id=...)`）。
+> ✅ **修订功能的 5 个缺陷已在 `v0.11.0` 打标签前全部修复**——这一版第一次写出来的 `amend` 是「能跑通、但留痕不可信」的状态，逐条记录如下，方便对照复盘：
+>
+> | # | 原缺陷 | 后果 | 修法 |
+> | --- | --- | --- | --- |
+> | 1 | `record_revisions.version` 写成了 `ForeignKey("medical_records.id")`（复制 `record_id` 那行时带过来的） | 插入版本号 N 时，数据库要求存在一条 `id = N` 的病历。现在只有 4 条病历，版本 2、3 恰好能过，**等某条病历改到第 5 版就报外键约束错误** | 改为普通 `Integer`，并删掉库里的 `record_revisions_version_fkey` |
+> | 2 | `snapshot` 是 `String(255)` | 三段病史拼成的 JSON 很容易超 255 字符，PostgreSQL 直接报 `value too long`，修订变成 `500` | 改为 `Text` |
+> | 3 | 快照在字段赋值**之后**才取 | `old_snapshot` 里存的其实是本次提交的新值，没提交的字段一律 `null`——历史里看不到「原来写的是什么」，审计价值丢掉一半 | 把取快照的代码移到赋值**之前**，直接读 `record.chief_complaint` 等旧值 |
+> | 4 | `GET /records/{id}/history` 只校验登录 | 任何登录用户都能读别人病历的修订历史与快照内容，破坏 `v0.9.0` 建立的「非 `admin` 只能看自己接诊」 | 补 `admin or record.doctor_id == current_user.id`，否则 `403` |
+> | 5 | `amend` 未限制病历状态 | 对 `draft` 调 `amend` 也会写留痕并把状态改成 `amended`，等于绕过 `PUT` 的草稿路径 | `draft` 返回 `400`，只允许 `signed` / `amended` |
+>
+> 顺手补了两处：`amend` 三个字段全为 `null` 时返回 `400`（否则会白写一条留痕、`version` 白加一）；`history` 返回体增加 `changed_by`，方便追到具体操作人。
+>
+> 💡 **这一轮最值得记住的是 `version` 的语义**：`record_revisions.version` 现在存的是「**被这次修订替换掉的那一版**」，与同一行的 `snapshot` 严格对应——看到 `version: 1` + 快照，就能读成「第 1 版当时长这样，被改掉了」。之前的写法存 `record.version + 1`（修订后的新版本号），和历史快照对不上，读的人会误以为「这段旧内容属于新版本」。
+>
+> ⚠️ **已有库必须手工迁移**：`create_all` 只建表不改表，旧库里这两处列定义不会自动变。如果本地已经用修复前的代码建过 `record_revisions`（本项目就是这种情况，已迁移完毕），需要在数据库执行：
+>
+> ```sql
+> ALTER TABLE record_revisions DROP CONSTRAINT IF EXISTS record_revisions_version_fkey;
+> ALTER TABLE record_revisions ALTER COLUMN snapshot TYPE text;
+> ```
+>
+> 另外，修复前产生的那条留痕（`snapshot` 存的是新值）没有还原价值，建议 `DELETE FROM record_revisions;` 清空后重新走一遍「建病历 → 签名 → 修订 → 查历史」验证。
 
 ## 数据模型
 
@@ -200,9 +226,12 @@ npm run dev
 | `patients` | `id`、`name`、`gender`、`phone` | 患者基本信息 |
 | `departments` | `id`、`name` | 科室，`name` 唯一 |
 | `users` | `id`、`username`、`password_hash`、`real_name`、`role`、`department_id`、`created_at` | 系统用户，`username` 唯一，`department_id` 外键关联 `departments` |
-| `medical_records` | `id`、`record_no`、`patient_id`、`doctor_id`、`visit_type`、`visit_time`、`chief_complaint`、`present_illness`、`allergy_history`、`status`、`signed_at`、`created_at`、`updated_at` | 病历主表，一次就诊一条；`record_no` 唯一，`patient_id` → `patients`、`doctor_id` → `users`；`status` 取值 `draft` / `signed` / `amended` / `void` |
+| `medical_records` | `id`、`record_no`、`patient_id`、`doctor_id`、`visit_type`、`visit_time`、`chief_complaint`、`present_illness`、`allergy_history`、`status`、`signed_at`、`created_at`、`updated_at`、`version` | 病历主表，一次就诊一条；`record_no` 唯一，`patient_id` → `patients`、`doctor_id` → `users`；`status` 取值 `draft` / `signed` / `amended` / `void`；`version` 从 `1` 起，每修订一次 `+1` |
+| `record_revisions` | `id`、`record_id`、`version`、`snapshot`、`changed_by`、`changed_at`、`change_reason` | 修订留痕，一次修订一条，**只增不改**；`record_id` → `medical_records`、`changed_by` → `users`；`version` 存的是「被这次修订替换掉的那一版」，与 `snapshot` 严格对应；`snapshot` 为 `Text`，存修订前字段值的 JSON 字符串；`change_reason` 必填 |
 
-> `medical_records` 目前只实现了主表的最小字段集。完整的字段分组、`diagnoses`（诊断）与 `record_revisions`（修订留痕）两张子表、DDL 与业务规则见[设计文档](./docs/medical-record-design.md)。
+> `medical_records` 目前只实现了主表的最小字段集。完整的字段分组、`diagnoses`（诊断）子表、DDL 与业务规则见[设计文档](./docs/medical-record-design.md)。
+>
+> **`create_all` 只建表、不改表**：`medical_records.version` 当初是手工 `ALTER TABLE` 补上的，因为模型里没有声明它。现在 `version` 已写进模型，**全新库**靠 `create_all` 就能建出正确结构；但**已存在的库**不会自动加列或改列类型——旧环境需要手工执行 `ALTER TABLE medical_records ADD COLUMN version INTEGER NOT NULL DEFAULT 1;`（本项目已执行过，无需重复）。`record_revisions` 的两处列定义修改同理，见接口一览下方的迁移说明。这正是项目至今没有引入 Alembic 的代价。
 
 ## 鉴权说明
 
@@ -250,7 +279,7 @@ curl http://localhost:8000/me \
 `main.py` 顶部维护唯一版本号，并传给 FastAPI：
 
 ```python
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 app = FastAPI(title="病历管理系统", version=__version__)
 ```
 
@@ -310,7 +339,8 @@ git tag -d v0.6.0
 
 | 版本 | 对应提交 | 提交日期 | 标签说明 |
 | --- | --- | --- | --- |
-| `v0.10.0` | 本次提交 | 2026-11-11 | 科室管理接口、病历反向查询，业务闭环打通 |
+| `v0.11.0` | 本次提交 | 2026-11-12 | 病历修订与快照留痕、修订历史查询，电子病历核心业务闭环 |
+| `v0.10.0` | `486db2c` | 2026-11-11 | 科室管理接口、病历反向查询，业务闭环打通 |
 | `v0.9.0` | `04987a9` | 2026-11-02 | 病历数据隔离、角色校验、JWT 异常细分 |
 | `v0.8.0` | `ff8227e` | 2026-10-29 | 病历签名锁定接口；病历详情与签名的前后端闭环 |
 | `v0.7.0` | `91f8358` | 2026-10-24 | 病历列表/详情接口与 CORS 支持，为前端联调做准备 |
@@ -331,24 +361,27 @@ git tag -l -n1
 git log --oneline --decorate -6
 ```
 
-## 最新更新内容（`v0.10.0`）
+## 最新更新内容（`v0.11.0`）
 
-本次更新是项目自创建以来的**第 10 次版本提交**，主题是**业务闭环**——科室从「只能手改数据库」变成「管理员可维护」，病历从「只能顺着看」变成「可以按患者倒着查」。
+本次更新是项目自创建以来的**第 11 次版本提交**，主题是**电子病历核心业务闭环**——病历从「签完就只能看」变成「可以改、改有据、改可查」。这一版是到目前为止最接近「医疗系统」而不是「增删改查练习」的一版。
 
-- 🏢 **科室管理接口（新增 2 个）**：`POST /departments` 仅 `admin` 可调用，`name` 重复返回 `400`；`GET /departments` **不要求登录**，因为注册页要在拿到 token 之前就把科室下拉框填上。这个「公开读、管理员写」的组合是刻意的
-- 🔁 **病历反向查询**：`GET /records` 增加 `patient_id` 查询参数，与已有的「非 `admin` 只看自己接诊」形成 `AND` 叠加，前端因此能做「点患者 → 看他的全部就诊记录」
-- 🧩 **业务链闭环**：注册 → 建患者 → 建病历 → 签名 → 按患者回查，五个动作现在都能在界面上走完，不再需要 Swagger 或手写 SQL 补位
-- 🖥️ **前端配套**：新增注册页（`/register`）与科室下拉；管理员登录后多出「科室管理」标签页；患者列表每行加「查看档案」，抽屉里按 `patient_id` 拉历史病历
-- 📝 **文档同步**：接口一览补到 14 个，开发进度勾选三项
+- ✏️ **草稿修改（`PUT /records/{record_id}`）**：仅 `draft` 状态可改，仅接诊医生本人可改。已签名或已修订的病历返回 `400`，并在文案里直接指向修订接口——**堵住「绕过留痕直接改」这条路**
+- 🧾 **修订接口（`POST /records/{record_id}/amend`）**：对已签名病历的修改不再直接覆盖，而是先往 `record_revisions` 写一条留痕（含版本号、修改人、修改原因、快照），再把 `version + 1`、状态置为 `amended`
+- 📜 **修订历史（`GET /records/{record_id}/history`）**：按时间倒序返回每次修订的版本号、时间、原因与快照，供追溯
+- 🗂️ **两张表配合形成「不可篡改」**：主表存当前状态，`record_revisions` 存历史；`signed_at` 一旦写入不再变动，签名时间与修订时间形成完整时间线
+- 🔧 **顺带修掉上一版的注册崩溃**：科室校验从 `filter(department_id=...)` 改为 `filter(Department.id == data.department_id)`，注册页选科室不再 `500`
 
-> **这一版还留了一个 bug**：注册时选择科室会返回 `500`（`filter(department_id=...)` 用法错误），修复方式见「API 接口一览」下方的「已知问题」。**提交前建议先修掉**——否则注册页只要不选科室能用、选了就崩，演示时很容易踩到。
+> **这一版的价值不在「功能多」，而在「留痕可信」**。初版 `amend` 有 5 处「能跑但不可信」的缺陷——外键误加在 `version` 上、快照存成了新值、`snapshot` 只有 `varchar(255)`、历史接口没做归属校验、`amend` 不限制病历状态——已在打标签前全部修掉，逐条对照见接口一览下方。
+>
+> 这一轮最值得讲的面试点是：**证明「数据不可篡改」靠的不是接口写得漂亮，而是表结构 + 快照时机**。快照必须在覆盖字段之前取，这一行代码的位置晚一步，整条审计链就失去意义；而这类 bug 单元测试很难发现，只能拿着业务语义逐行读代码。
 
-**如何验收**：`/docs` 中接口数量 **14 个**，版本号显示 `0.10.0`。用管理员登录前端，能在「科室管理」里新增科室；用医生登录，点患者行的「查看档案」能看到该患者的病历列表（只含自己接诊的部分）。
+**如何验收**：`/docs` 中接口操作数 **17 个**，版本号显示 `0.11.0`。流程：医生建病历 → `PUT` 改草稿（成功）→ 签名 → 再 `PUT` 应返回 `400` → 对 `draft` 直接调 `amend` 也应返回 `400` → 签名后调 `amend` 并传 `change_reason` → `GET /history` 能看到 `version: 1` 的记录，且 `old_snapshot.chief_complaint` 是**修订前**的原文，不是刚提交的新值。
 
 ## 版本历史
 
 | 版本 | 日期 | 主要内容 |
 | --- | --- | --- |
+| `v0.11.0` | 2026-11-12 | 新增 `PUT /records/{record_id}`（仅 `draft` 可改）、`POST /records/{record_id}/amend`（修订并写快照）、`GET /records/{record_id}/history`（修订历史）；新增 `record_revisions` 表与 `medical_records.version`；修复注册时科室校验的 `filter()` 用法错误 |
 | `v0.10.0` | 2026-11-11 | 新增科室管理接口（`POST /departments` 仅 `admin`、`GET /departments` 公开）；`GET /records` 支持 `patient_id` 反向查询；前端新增注册页、科室管理标签页与患者历史档案抽屉 |
 | `v0.9.0` | 2026-11-02 | 修复 `GET /records` 列表越权（非 `admin` 追加 `doctor_id` 过滤）；`role` 改为 `Literal["doctor","nurse"]` 阻止任意角色注册；JWT 异常细分为 `JWTError` / `ValueError`；前端新增 axios 统一封装 |
 | `v0.8.0` | 2026-10-29 | 新增病历签名锁定接口（`POST /records/{record_id}/sign`）：仅接诊医生可签、重复签名返回 `400`、写入 `signed_at`；前端补齐病历列表、详情抽屉与签名交互 |
@@ -366,14 +399,25 @@ git log --oneline --decorate -6
 
 ## 后续计划
 
-- [ ] 病历修改接口（`PATCH /records/{id}`：仅 `draft` 可改，`signed` 状态拒绝修改）
-- [ ] 修订留痕（`record_revisions`：记录每次修改的前后快照与修改人）
+**已完成（`v0.11.0` 内修复）**
+
+- [x] `record_revisions.version` 去掉误加的外键，改为普通 `Integer`
+- [x] `record_revisions.snapshot` 由 `String(255)` 改为 `Text`（JSON 快照会超长）
+- [x] 快照改为记录**修订前的旧值**，而不是本次提交的新值
+- [x] `GET /records/{id}/history` 补归属校验（`admin` 或接诊医生）
+- [x] `amend` 限制为只对 `signed` / `amended` 生效，`draft` 返回 `400`
+- [x] `amend` 三个字段全为 `null` 时返回 `400`；`history` 返回体补 `changed_by`
+
+**其后**
+
 - [ ] 诊断子表（`diagnoses`）与 ICD-10 编码
 - [ ] 审计日志（记录所有敏感操作）
+- [ ] 前端补「编辑草稿」与「修订历史」入口（当前只有后端能力，界面还没接）
 - [ ] 细粒度权限（医生只能查看自己科室的患者）
 - [ ] 路由版本化（统一前缀 `/api/v1`）
 - [ ] 补充 pytest 自动化测试，为 `1.0.0` 做准备
 - [ ] 技术债清理（计划在 `1.0.0` 前处理）：`requirements.txt` 转 UTF-8、病史字段由 `String(255)` 改为 `Text`、删除 `app/auth.py` 末尾残留的 `except Exception` 兜底（`JWTError` / `ValueError` 已细化，但宽泛捕获仍在，等于没完全收窄）
+- [ ] 引入 Alembic 迁移（当前靠 `create_all`，加列必须手写 `ALTER TABLE`，换机器必踩）
 
 ## 设计文档
 

@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import bcrypt
@@ -6,8 +7,9 @@ from fastapi import Depends, HTTPException, APIRouter
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User,Patient,MedicalRecord,Department
-from app.schemas import UserLogin, UserRegister, PatientCreate, MedicalRecordCreate, MedicalRecordResponse, DepartmentCreate
+from app.models import User, Patient, MedicalRecord, Department, RecordRevision
+from app.schemas import UserLogin, UserRegister, PatientCreate, MedicalRecordCreate, MedicalRecordResponse, \
+    DepartmentCreate, MedicalRecordUpdate, MedicalRecordAmend
 from app.auth import create_access_token,get_current_user,require_role
 
 router = APIRouter()
@@ -190,3 +192,107 @@ def create_department(
 @router.get("/departments")
 def list_departments(db: Session = Depends(get_db)):
     return db.query(Department).all()
+
+@router.put("/records/{record_id}",response_model=MedicalRecordResponse)
+def update_draft_record(
+        record_id: int,
+        data: MedicalRecordUpdate,
+        current_user: User = Depends(require_role("doctor")),
+        db: Session = Depends(get_db),
+):
+    record = db.query(MedicalRecord).filter(MedicalRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404,detail="病历不存在")
+    if record.doctor_id != current_user.id:
+        raise HTTPException(status_code=403,detail="只能修改自己的病历")
+    if record.status != "draft":
+        raise HTTPException(status_code=400,detail="该病历已签名锁定，请使用修订接口(amend)")
+
+    if data.chief_complaint is not None:
+        record.chief_complaint = data.chief_complaint
+    if data.present_illness is not None:
+        record.present_illness = data.present_illness
+    if data.allergy_history is not None:
+        record.allergy_history = data.allergy_history
+
+    db.commit()
+    db.refresh(record)
+    return record
+
+@router.post("/records/{record_id}/amend",response_model=MedicalRecordResponse)
+def amend_record(
+        record_id: int,
+        data: MedicalRecordAmend,
+        current_user: User = Depends(require_role("doctor")),
+        db: Session = Depends(get_db)
+):
+    record = db.query(MedicalRecord).filter(MedicalRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404,detail="病历不存在")
+    if record.doctor_id != current_user.id:
+        raise HTTPException(status_code=403,detail="只能修订自己的病历")
+    if record.status == "draft":
+        raise HTTPException(status_code=400,detail="草稿病历请使用 PUT /records/{id} 直接修改，修订只用于已签名病历")
+    if record.status == "void":
+        raise HTTPException(status_code=400,detail="作废病历不可修订")
+    if data.chief_complaint is None and data.present_illness is None and data.allergy_history is None:
+        raise HTTPException(status_code=400,detail="修订内容不能为空，至少要改一个字段")
+
+    # 关键：快照必须在覆盖字段之前取。先改后取存进去的就是新值，留痕等于没做。
+    old_snapshot = {
+        "version": record.version,
+        "chief_complaint": record.chief_complaint,
+        "present_illness": record.present_illness,
+        "allergy_history": record.allergy_history,
+    }
+
+    revision = RecordRevision(
+        record_id=record.id,
+        version=record.version,  # 记录的是「被替换掉的那一版」，与 snapshot 内容一致
+        snapshot=json.dumps(old_snapshot, ensure_ascii=False),
+        change_reason=data.change_reason,
+        changed_by=current_user.id,
+    )
+    db.add(revision)
+
+    if data.chief_complaint is not None:
+        record.chief_complaint = data.chief_complaint
+    if data.present_illness is not None:
+        record.present_illness = data.present_illness
+    if data.allergy_history is not None:
+        record.allergy_history = data.allergy_history
+
+    record.version +=1
+    record.status = "amended"
+
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@router.get("/records/{record_id}/history")
+def get_record_history(
+        record_id: int,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)
+):
+    record = db.query(MedicalRecord).filter(MedicalRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404,detail="病历不存在")
+    if current_user.role != "admin" and record.doctor_id != current_user.id:
+        raise HTTPException(status_code=403,detail="你没有权限查看他人病历的修订历史")
+
+    # 查该病历的所有修订记录
+    revisions = db.query(RecordRevision).filter(RecordRevision.record_id == record_id).order_by(
+        RecordRevision.changed_at.desc()).all()
+
+    return [
+        {
+            "version": rev.version,
+            "changed_at": rev.changed_at,
+            "changed_by": rev.changed_by,
+            "change_reason": rev.change_reason,
+            "old_snapshot": json.loads(rev.snapshot)  # 把存的 JSON 字符串转回对象
+        }
+        for rev in revisions
+    ]

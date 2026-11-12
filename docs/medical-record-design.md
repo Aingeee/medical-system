@@ -149,7 +149,7 @@ patients ──< medical_records >── departments
 | --- | --- | --- |
 | `id` | Integer | PK |
 | `record_id` | Integer | FK → `medical_records.id`, NOT NULL |
-| `version` | Integer | 修订后的版本号 |
+| `version` | Integer | 被这次修订替换掉的版本号（与同一行的 `snapshot` 内容对应） |
 | `snapshot` | Text | 修订前内容的 JSON 快照（可追溯"改了什么"） |
 | `change_reason` | String(500) | 修订原因（合规要求必须填写） |
 | `changed_by` | Integer | FK → `users.id`，操作人 |
@@ -391,13 +391,23 @@ class RecordRevision(Base):
 - [x] 可见性隔离（列表）：`GET /records` 对非 `admin` 追加 `doctor_id` 过滤 — `v0.9.0`（此前列表**未做过滤**，属越权漏洞）
 - [ ] 扩展字段：`department_id`、`visit_no`、`supervisor_id`
 - [ ] `diagnoses` 诊断子表（ICD-10 编码）
-- [ ] `record_revisions` 修订留痕表
-- [ ] 状态机校验：`draft` 才可改，`signed` 后拒改
+- [x] `record_revisions` 修订留痕表 — `v0.11.0`（`snapshot` 为 `Text`，存修订前字段值的 JSON；`version` 为被替换掉的版本号）
+- [x] 状态机校验：`PUT` 仅 `draft` 可改，`signed` 后拒改 — `v0.11.0`
 - [ ] 软删除：`deleted_at` 字段，作废用 `status = void`
-- [ ] 修订接口：`POST /records/{id}/amend`
+- [x] 修订接口：`POST /records/{id}/amend`（写快照 + `version + 1` + 状态置 `amended`）— `v0.11.0`
+- [x] 修订历史查询：`GET /records/{id}/history` — `v0.11.0`
 - [x] 列表过滤：`GET /records?patient_id=` — `v0.10.0`（与可见性条件为 `AND`，医生查他人患者返回空列表）；`department_id` / `status` 仍未实现
 - [ ] 细粒度权限：医生只能看自己科室的患者
 
 > 每完成一项，在此处更新状态，并在 README 的「版本历史」里记录。
 >
-> **`signed` 锁定的实际强度**：`v0.8.0` 的签名只做到「状态置为 `signed` 且不可回退」，因为**还没有修改接口**，所以「已签名不可编辑」目前没有可被拒绝的入口。真正的锁定要等 `PUT /records/{id}` 加上 `status` 校验之后才成立。
+> **`signed` 锁定的强度（`v0.11.0` 起）**：`PUT /records/{id}` 已加上 `status != "draft"` 即返回 `400`，所以「已签名不可直接编辑」这次**真正成立**了，不再是空谈。
+>
+> **`v0.11.0` 曾经与本文档有四处偏差，已在打标签前全部修正**。这四条值得单独记一笔，因为每一条都是「代码能跑、语义已错」的类型，静态检查发现不了：
+>
+> 1. `record_revisions.version` 曾被误定义为 `ForeignKey("medical_records.id")`（复制 `record_id` 那行时带出来的）。当时病历少、版本号小，恰好没触发；但版本号一旦超过病历总数就会报外键约束错误。现为普通 `Integer`。
+> 2. `snapshot` 曾用 `String(255)`，而本文档要求 `Text`。三段病史的 JSON 很容易超 255 字符，超出即 `500`。现为 `Text`。
+> 3. 快照一度存成**修订后**的新值，与本文档 4.2「存修订前的旧值」相反。根因是取快照的代码写在了字段赋值之后——**这一行代码的位置决定了留痕有没有意义**。现已移到赋值之前。
+> 4. `GET /records/{id}/history` 曾只校验登录，任何用户可读任意病历的修订历史。现已补 `admin or record.doctor_id == current_user.id`。
+>
+> 另有两处收紧：`amend` 对 `draft` 直接返回 `400`（草稿走 `PUT`，不进留痕通道）；三个字段全为 `null` 的修订请求返回 `400`，避免产生一条「什么都没改」的无效留痕。

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, func
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, func
 
 from app.database import Base
 
@@ -28,6 +28,7 @@ class User(Base):
 class MedicalRecord(Base):
     __tablename__ = "medical_records"
     id = Column(Integer, primary_key=True, index=True)
+    version = Column(Integer, nullable=False, default=1)  # 病历版本号，每次修订 +1
     record_no = Column(String(30),unique=True,nullable=False,index=True)
     patient_id = Column(Integer, ForeignKey("patients.id"),nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"),nullable=False)
@@ -40,3 +41,18 @@ class MedicalRecord(Base):
     signed_at = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(),onupdate=func.now())
+
+class RecordRevision(Base):
+    """病历修订留痕表：只增不改，用于审计。
+
+    每行代表一次修订动作，snapshot 保存的是「被这次修订替换掉的那一版」的字段值。
+    """
+    __tablename__ = "record_revisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    record_id = Column(Integer, ForeignKey("medical_records.id"), nullable=False, index=True)
+    version = Column(Integer, nullable=False, index=True)  # 被替换掉的病历版本号
+    snapshot = Column(Text, nullable=False)                # JSON 字符串，存修订前的字段值
+    changed_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    changed_at = Column(DateTime, server_default=func.now())
+    change_reason = Column(String(255), nullable=False)

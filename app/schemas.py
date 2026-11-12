@@ -29,6 +29,7 @@ class MedicalRecordCreate(BaseModel):
 
 class MedicalRecordResponse(BaseModel):
     id: int
+    version: int
     record_no: str
     patient_id: int
     doctor_id: int
@@ -46,3 +47,11 @@ class MedicalRecordResponse(BaseModel):
 
 class DepartmentCreate(BaseModel):
     name: str
+
+class MedicalRecordUpdate(BaseModel):
+    chief_complaint: str | None = None
+    present_illness: str | None = None
+    allergy_history: str | None = None
+
+class MedicalRecordAmend(MedicalRecordUpdate):
+    change_reason: str
